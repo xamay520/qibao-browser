@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<title>七宝浏览器</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">七</span>
+      <div>
+        <h1>七宝浏览器</h1>
+        <p class="sub">多环境隔离 · 代理 · 指纹伪装</p>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="btn-data-dir" class="btn ghost" title="打开环境数据目录">数据目录</button>
+      <button id="btn-new" class="btn primary">+ 新建环境</button>
+    </div>
+  </header>
+
+  <main class="content">
+    <div id="env-list" class="env-grid">
+      <div class="empty" id="empty-tip" hidden>
+        <p>还没有环境</p>
+        <p class="dim">点击右上角「新建环境」创建第一个隔离环境</p>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- 新建 / 编辑面板 -->
+<div id="editor-mask" class="mask" hidden>
+  <div class="editor">
+    <div class="editor-head">
+      <h2 id="editor-title">新建环境</h2>
+      <button class="btn ghost sm" id="btn-editor-close">✕</button>
+    </div>
+    <div class="editor-body">
+      <section>
+        <h3>基本信息</h3>
+        <div class="row">
+          <label>环境名称
+            <input id="f-name" type="text" placeholder="如：店铺A / 账号2">
+          </label>
+          <label>主页
+            <input id="f-homepage" type="text" placeholder="https://www.baidu.com">
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <h3>代理（可选）</h3>
+        <div class="row">
+          <label class="narrow">类型
+            <select id="f-proxy-type">
+              <option value="">不使用代理</option>
+              <option value="http">HTTP</option>
+              <option value="https">HTTPS</option>
+              <option value="socks5">SOCKS5</option>
+            </select>
+          </label>
+          <label>主机
+            <input id="f-proxy-host" type="text" placeholder="127.0.0.1">
+          </label>
+          <label class="narrow">端口
+            <input id="f-proxy-port" type="text" placeholder="1080">
+          </label>
+        </div>
+        <div class="row">
+          <label>用户名
+            <input id="f-proxy-user" type="text" placeholder="可选">
+          </label>
+          <label>密码
+            <input id="f-proxy-pass" type="password" placeholder="可选">
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <h3>指纹</h3>
+        <div class="row">
+          <label>UA 预设
+            <select id="f-ua-preset"></select>
+          </label>
+          <label>时区
+            <select id="f-timezone"></select>
+          </label>
+        </div>
+        <div class="row">
+          <label>CPU 核数
+            <input id="f-cores" type="number" min="2" max="64" value="8">
+          </label>
+          <label>内存 (GB)
+            <input id="f-memory" type="number" min="2" max="64" value="8">
+          </label>
+          <label>WebGL 预设
+            <select id="f-webgl"></select>
+          </label>
+        </div>
+        <div class="row">
+          <label>屏幕宽
+            <input id="f-swidth" type="number" placeholder="留空=真实值" min="640">
+          </label>
+          <label>屏幕高
+            <input id="f-sheight" type="number" placeholder="留空=真实值" min="480">
+          </label>
+          <label class="check">
+            <input id="f-canvas" type="checkbox" checked>
+            Canvas 噪声
+          </label>
+        </div>
+        <p class="hint">自定义 UA（留空则用预设）</p>
+        <textarea id="f-ua-custom" rows="2" placeholder="粘贴完整 UA 字符串，留空使用预设"></textarea>
+      </section>
+    </div>
+    <div class="editor-foot">
+      <span id="editor-error" class="error"></span>
+      <button class="btn ghost" id="btn-editor-cancel">取消</button>
+      <button class="btn primary" id="btn-editor-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<script src="renderer.js"></script>
+</body>
+</html>

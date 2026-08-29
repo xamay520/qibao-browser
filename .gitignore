@@ -1,0 +1,9 @@
+node_modules/
+_tmp/
+user-data/
+_electron_cache/
+_npmcache/
+smoke-result.txt
+smoke-out.log
+*.log
+.DS_Store
