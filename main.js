@@ -12,11 +12,19 @@ const { buildInjectScript, UA_PRESETS, TIMEZONES, WEBGL_PRESETS, tzOffsetMinutes
 const { ProfileStore } = require('./store');
 
 // ---------- 便携化 userData ----------
-// 数据放在应用目录旁的 user-data/（D 盘），避免 C 盘空间不足导致运行失败，
-// 也便于整体备份迁移。必须在任何 getPath('userData') 之前设置。
+// 开发版：数据放在项目旁的 user-data/，避免 C 盘空间不足，也便于整体备份迁移。
+// 发行版（electron-builder 打包后）：__dirname 位于只读 asar，不能写；
+//   故保持 electron 默认 userData（OS appData，可写）。
 // 测试/多实例可用环境变量 QIBAO_USER_DATA 覆盖到隔离目录。
+// 必须在任何 getPath('userData') 之前设置。
 try {
-  app.setPath('userData', process.env.QIBAO_USER_DATA || path.join(__dirname, 'user-data'));
+  const userDataOverride = process.env.QIBAO_USER_DATA;
+  if (userDataOverride) {
+    app.setPath('userData', userDataOverride);
+  } else if (!app.isPackaged) {
+    app.setPath('userData', path.join(__dirname, 'user-data'));
+  }
+  // app.isPackaged 且无覆盖 → 使用系统默认 userData（可写）
 } catch (_) {}
 
 // ---------- 全局指纹相关开关 ----------

@@ -7,3 +7,6 @@ smoke-result.txt
 smoke-out.log
 *.log
 .DS_Store
+
+# 构建产物（exe 通过 GitHub Release 分发，不进 git）
+dist/

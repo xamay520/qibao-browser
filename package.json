@@ -7,9 +7,55 @@
   "private": true,
   "scripts": {
     "start": "node start.js",
-    "selftest": "node selftest.js"
+    "selftest": "node selftest.js",
+    "dist": "electron-builder --win --x64",
+    "dist:portable": "electron-builder --win --x64 portable",
+    "dist:nsis": "electron-builder --win --x64 nsis"
   },
   "devDependencies": {
-    "electron": "^37.2.0"
+    "electron": "^37.2.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.qibao.browser",
+    "productName": "七宝浏览器",
+    "copyright": "Copyright © 2026 七宝",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "store.js",
+      "fingerprint-injector.js",
+      "renderer/**/*",
+      "README.md",
+      "VPNGATE.md",
+      "七宝浏览器使用说明.md",
+      "LICENSE"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": "x64"
+        },
+        {
+          "target": "nsis",
+          "arch": "x64"
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "七宝浏览器"
+    }
   }
 }
