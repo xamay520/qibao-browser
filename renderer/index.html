@@ -23,12 +23,46 @@
   </header>
 
   <main class="content">
-    <div id="env-list" class="env-grid">
-      <div class="empty" id="empty-tip" hidden>
-        <p>还没有环境</p>
-        <p class="dim">点击右上角「新建环境」创建第一个隔离环境</p>
+    <aside class="sidebar">
+      <div class="side-head">
+        <span>环境列表</span>
+        <span class="side-count" id="env-count">0</span>
       </div>
-    </div>
+      <div id="env-list" class="env-list">
+        <div class="empty" id="empty-tip" hidden>
+          <p>还没有环境</p>
+          <p class="dim">点击右上角「新建环境」创建第一个隔离环境</p>
+        </div>
+      </div>
+    </aside>
+
+    <section class="stage">
+      <div class="stage-bar" id="stage-bar" hidden>
+        <div id="stage-tabs" class="stage-tabs"></div>
+      </div>
+      <div class="nav-bar" id="nav-bar" hidden>
+        <button class="nav-btn" id="nav-back" title="后退" disabled>
+          <svg viewBox="0 0 24 24"><path d="M15.5 5.5 9 12l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="nav-btn" id="nav-fwd" title="前进" disabled>
+          <svg viewBox="0 0 24 24"><path d="M8.5 5.5 15 12l-6.5 6.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="nav-btn" id="nav-reload" title="刷新">
+          <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4h-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="nav-btn" id="nav-home" title="回到主页">
+          <svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7M6 10v9h12v-9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <input id="nav-url" type="text" placeholder="输入网址，回车访问（如 qibao.online）" spellcheck="false" autocomplete="off">
+      </div>
+      <div class="view-host" id="view-host">
+        <div class="stage-empty" id="stage-empty">
+          <div class="stage-empty-icon">🌐</div>
+          <p>选择左侧环境，点「启动」</p>
+          <p class="dim">每个环境在右侧独立标签页打开 · 数据互不干扰 · 点标签自由切换</p>
+        </div>
+      </div>
+    </section>
   </main>
 </div>
 
@@ -39,6 +73,7 @@
       <h2 id="editor-title">新建环境</h2>
       <button class="btn ghost sm" id="btn-editor-close">✕</button>
     </div>
+    <div id="editor-error" class="error-banner" hidden></div>
     <div class="editor-body">
       <section>
         <h3>基本信息</h3>
@@ -47,13 +82,17 @@
             <input id="f-name" type="text" placeholder="如：店铺A / 账号2">
           </label>
           <label>主页
-            <input id="f-homepage" type="text" placeholder="https://www.baidu.com">
+            <input id="f-homepage" type="text" placeholder="https://qibao.online">
           </label>
         </div>
       </section>
 
       <section>
         <h3>代理（可选）</h3>
+        <p class="hint">
+          没有代理也能用；需要翻墙时选 HTTP/SOCKS5 填节点即可。
+          <button type="button" class="linklike" id="btn-vpngate-help">去 vpngate 拿免费节点 →</button>
+        </p>
         <div class="row">
           <label class="narrow">类型
             <select id="f-proxy-type">
@@ -78,6 +117,18 @@
             <input id="f-proxy-pass" type="password" placeholder="可选">
           </label>
         </div>
+        <details id="vpngate-tips" class="tipbox">
+          <summary>vpngate 免费节点使用步骤（小白看这里）</summary>
+          <ol>
+            <li>点击上方"去 vpngate 拿免费节点"打开列表页</li>
+            <li><b>在表格里向右滚动</b>，找到名为 <code>Socks</code> 的那一列（位置在 SSL-VPN / L2TP / OpenVPN / SSTP 之后）</li>
+            <li><b>认准 Socks 列里有数字（如 1080 / 1295 / 1296）的行</b>——那才是浏览器能用的 SOCKS5 代理</li>
+            <li>把该行 DNS 填"主机"、<b>Socks 列里那个数字</b>填"端口"——<b>千万别填 SSL-VPN / OpenVPN 列下的 443</b>，那是 OpenVPN 端口浏览器用不了</li>
+            <li>类型选 <b>SOCKS5</b>，用户名密码填 <b><code>vpn</code> / <code>vpn</code></b>（点上方按钮自动帮你填好）</li>
+            <li>保存启动后访问 <code>ip.sb</code>，看到显示节点 IP = 成功；显示你本机 IP = 端口类型不对，回表重选</li>
+          </ol>
+          <p class="hint">vpngate 免费节点 24h 轮换、人多会慢，多存几个备用。详细说明见随附文档 <code>VPNGATE.md</code>。</p>
+        </details>
       </section>
 
       <section>
@@ -118,7 +169,6 @@
       </section>
     </div>
     <div class="editor-foot">
-      <span id="editor-error" class="error"></span>
       <button class="btn ghost" id="btn-editor-cancel">取消</button>
       <button class="btn primary" id="btn-editor-save">保存</button>
     </div>

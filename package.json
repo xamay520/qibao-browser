@@ -6,7 +6,7 @@
   "main": "main.js",
   "private": true,
   "scripts": {
-    "start": "electron .",
+    "start": "node start.js",
     "selftest": "node selftest.js"
   },
   "devDependencies": {

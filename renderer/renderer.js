@@ -1,12 +1,16 @@
 'use strict';
 /* 七宝浏览器 — 渲染进程逻辑 */
 
-const api = window.api;
+const bridge = window.api;
 
 const state = {
   presets: null,
   editingId: null, // null = 新建
+  activeId: null,  // 当前显示在舞台上的环境 id
 };
+
+// 各运行环境的导航状态缓存：id -> {url, canBack, canFwd}（主进程 did-navigate 回推）
+const navCache = {};
 
 const $ = (id) => document.getElementById(id);
 
@@ -19,7 +23,7 @@ function esc(s) {
 
 // ---------- 预设加载 ----------
 async function loadPresets() {
-  state.presets = await api.presets();
+  state.presets = await bridge.presets();
   const uaSel = $('f-ua-preset');
   uaSel.innerHTML = state.presets.ua.map((p) => `<option value="${p.id}">${esc(p.label)}</option>`).join('') +
     '<option value="__custom__">自定义 UA…</option>';
@@ -33,16 +37,17 @@ async function loadPresets() {
 
 // ---------- 环境列表 ----------
 async function refreshList() {
-  const list = await api.list();
-  const grid = $('env-list');
+  const list = await bridge.list();
+  const envList = $('env-list');
   $('empty-tip').hidden = list.length > 0;
+  $('env-count').textContent = String(list.length);
 
   // 清掉除 empty-tip 外的卡片
-  grid.querySelectorAll('.card').forEach((n) => n.remove());
+  envList.querySelectorAll('.card').forEach((n) => n.remove());
 
   for (const p of list) {
     const card = document.createElement('div');
-    card.className = 'card' + (p.running ? ' running' : '');
+    card.className = 'card' + (p.running ? ' running' : '') + (p.active ? ' active' : '');
     card.dataset.id = p.id;
 
     const proxy = p.proxy && p.proxy.host
@@ -59,7 +64,7 @@ async function refreshList() {
     card.innerHTML = `
       <div class="card-head">
         <span class="card-name"><span class="dot ${p.running ? 'on' : ''}"></span>${esc(p.name)}</span>
-        <span style="font-size:11px;color:var(--text-dim)">${p.running ? '运行中' : '已停止'}</span>
+        <span style="font-size:11px;color:var(--text-dim)">${p.running ? (p.active ? '当前显示' : '运行中') : '已停止'}</span>
       </div>
       <div class="card-meta">
         <div class="kv"><span class="k">代理</span><span class="v">${esc(proxy)}</span></div>
@@ -76,31 +81,148 @@ async function refreshList() {
 
     card.addEventListener('click', (e) => {
       const opBtn = e.target.closest('[data-op]');
-      if (!opBtn) { openEditor(p.id); return; }
-      const op = opBtn.dataset.op;
-      if (op === 'toggle') toggleEnv(p.id, p.running);
-      else if (op === 'edit') openEditor(p.id);
-      else if (op === 'del') deleteEnv(p.id);
-      e.stopPropagation();
+      if (opBtn) {
+        const op = opBtn.dataset.op;
+        if (op === 'toggle') toggleEnv(p.id, p.running);
+        else if (op === 'edit') openEditor(p.id);
+        else if (op === 'del') deleteEnv(p.id);
+        e.stopPropagation();
+        return;
+      }
+      // 点卡片主体：运行中 → 切到前台；已停止 → 启动
+      if (p.running) activateEnv(p.id);
+      else startEnv(p.id);
     });
 
-    grid.appendChild(card);
+    envList.appendChild(card);
   }
+
+  renderTabs(list);
+  applyNav(list);
+}
+
+// ---------- 浏览器工具条（地址栏 / 后退前进刷新主页） ----------
+// 工具条属于"当前 active 环境"：active 变化时归属跟着变
+function applyNav(list) {
+  const active = (list || []).find((p) => p.active) || null;
+  state.activeId = active ? active.id : null;
+  $('nav-bar').hidden = !active;
+  applyNavBar();
+}
+
+// 把地址栏值/按钮态刷成当前 active 环境的缓存状态
+function applyNavBar() {
+  const bar = $('nav-bar');
+  if (!bar || bar.hidden || !state.activeId) return;
+  const st = navCache[state.activeId] || { url: '', canBack: false, canFwd: false };
+  const input = $('nav-url');
+  if (document.activeElement !== input) input.value = st.url; // 用户正在输入时不清空
+  input.placeholder = st.url ? '输入网址，回车访问' : '加载中… 输入网址回车访问';
+  $('nav-back').disabled = !st.canBack;
+  $('nav-fwd').disabled = !st.canFwd;
+}
+
+async function goNavOp(op) {
+  if (!state.activeId) return;
+  await bridge.navOp(state.activeId, op);
+}
+
+async function navToUrl() {
+  if (!state.activeId) return;
+  const input = $('nav-url');
+  let v = input.value.trim();
+  if (!v) return;
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(v)) {
+    // 无协议：localhost/127 开头走 http，其余按 https 处理
+    v = /^(localhost|127\.|\[::1\])/.test(v) ? 'http://' + v : 'https://' + v;
+  }
+  input.blur();
+  await bridge.navigate(state.activeId, v);
+}
+
+// 顶部标签条：每个运行中的环境一个标签，点击切换、× 停止
+function renderTabs(list) {
+  const running = list.filter((p) => p.running);
+  const bar = $('stage-bar');
+  bar.hidden = running.length === 0;
+  const tabs = $('stage-tabs');
+  tabs.querySelectorAll('.env-tab').forEach((n) => n.remove());
+
+  for (const p of running) {
+    const tab = document.createElement('div');
+    tab.className = 'env-tab' + (p.active ? ' active' : '');
+    tab.title = p.homepage || p.name;
+    tab.innerHTML =
+      `<span class="tab-dot"></span>` +
+      `<span class="tab-name">${esc(p.name)}</span>` +
+      `<button class="tab-x" title="停止并关闭">×</button>`;
+    tab.addEventListener('click', (e) => {
+      if (e.target.closest('.tab-x')) {
+        e.stopPropagation();
+        bridge.stop(p.id).then(() => { reportViewBounds(); refreshList(); });
+        return;
+      }
+      bridge.activate(p.id).then(() => refreshList());
+    });
+    tabs.appendChild(tab);
+  }
+
+  // 没有任何环境被激活显示时，舞台给出引导
+  $('stage-empty').hidden = list.some((p) => p.active);
+}
+
+// 把舞台（#view-host）的实际位置告诉主进程，让内嵌视图精确贴齐（避开顶部标签栏）
+function reportViewBounds() {
+  const el = $('view-host');
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  bridge.viewBounds({
+    x: Math.round(r.x), y: Math.round(r.y),
+    width: Math.round(r.width), height: Math.round(r.height),
+  });
 }
 
 async function toggleEnv(id, running) {
   if (running) {
-    await api.stop(id);
+    await bridge.stop(id);
   } else {
-    const r = await api.start(id);
+    const r = await bridge.start(id);
     if (!r.ok) alert(r.message || '启动失败');
   }
+  reportViewBounds();
   refreshList();
+}
+
+async function startEnv(id) {
+  const r = await bridge.start(id);
+  if (!r.ok) alert(r.message || '启动失败');
+  reportViewBounds();
+  refreshList();
+}
+
+async function activateEnv(id) {
+  const r = await bridge.activate(id);
+  if (!r.ok && r.message !== '未在运行') alert(r.message || '切换失败');
+  reportViewBounds();
+  refreshList();
+}
+
+// 编辑面板是 DOM 遮罩层；内嵌视图是原生层会盖住遮罩 → 打开面板时隐藏视图，关闭时恢复
+function setEditorOpen(open) {
+  if (open) {
+    $('editor-mask').hidden = false;
+    bridge.setViewVisible(false);
+  } else {
+    $('editor-mask').hidden = true;
+    state.editingId = null;
+    setEditorError('');
+    bridge.setViewVisible(true);
+  }
 }
 
 async function deleteEnv(id) {
   if (!confirm(`确定删除环境「${id}」？\n（浏览器数据也会一并删除，不可恢复）`)) return;
-  await api.remove(id);
+  await bridge.remove(id);
   refreshList();
 }
 
@@ -108,11 +230,11 @@ async function deleteEnv(id) {
 function openEditor(id) {
   state.editingId = id;
   $('editor-title').textContent = id ? '编辑环境' : '新建环境';
-  $('editor-error').textContent = '';
-  $('editor-mask').hidden = false;
+  setEditorError('');
+  setEditorOpen(true); // 隐藏内嵌视图，避免盖住遮罩层
 
   if (id) {
-    api.list().then((list) => {
+    bridge.list().then((list) => {
       const p = list.find((x) => x.id === id);
       if (p) fillForm(p);
     });
@@ -122,15 +244,21 @@ function openEditor(id) {
 }
 
 function closeEditor() {
-  $('editor-mask').hidden = true;
-  state.editingId = null;
+  setEditorOpen(false);
+}
+
+function setEditorError(msg) {
+  const el = $('editor-error');
+  el.textContent = msg || '';
+  el.hidden = !msg;
+  if (msg) console.error('[editor]', msg);
 }
 
 function fillForm(p) {
   const fp = p ? p.fingerprint || {} : {};
   const proxy = p ? p.proxy || {} : {};
   $('f-name').value = p ? p.name : '';
-  $('f-homepage').value = p ? p.homepage || 'https://www.baidu.com' : 'https://www.baidu.com';
+  $('f-homepage').value = p ? p.homepage || 'https://qibao.online' : 'https://qibao.online';
 
   $('f-proxy-type').value = proxy.type || '';
   $('f-proxy-host').value = proxy.host || '';
@@ -174,7 +302,7 @@ function onUaPresetChange() {
 
 function collectForm() {
   const name = $('f-name').value.trim();
-  if (!name) { $('editor-error').textContent = '请填写环境名称'; return null; }
+  if (!name) { setEditorError('请填写环境名称'); return null; }
 
   const proxy = {
     type: $('f-proxy-type').value,
@@ -183,13 +311,13 @@ function collectForm() {
     username: $('f-proxy-user').value.trim(),
     password: $('f-proxy-pass').value,
   };
-  if (proxy.type && !proxy.host) { $('editor-error').textContent = '填写了代理类型就必须填主机'; return null; }
+  if (proxy.type && !proxy.host) { setEditorError('填写了代理类型就必须填主机'); return null; }
 
   const uaPresetVal = $('f-ua-preset').value;
   let ua = '', platform = '', language = 'zh-CN';
   if (uaPresetVal === '__custom__') {
     ua = $('f-ua-custom').value.trim();
-    if (!ua) { $('editor-error').textContent = '自定义 UA 不能为空'; return null; }
+    if (!ua) { setEditorError('自定义 UA 不能为空'); return null; }
     platform = 'Win32';
   } else {
     const p = state.presets.ua.find((u) => u.id === uaPresetVal);
@@ -218,7 +346,7 @@ function collectForm() {
 
   return {
     name,
-    homepage: $('f-homepage').value.trim() || 'https://www.baidu.com',
+    homepage: $('f-homepage').value.trim() || 'https://qibao.online',
     proxy,
     fingerprint,
   };
@@ -227,13 +355,17 @@ function collectForm() {
 async function saveEditor() {
   const data = collectForm();
   if (!data) return;
-  if (state.editingId) {
-    await api.update(state.editingId, data);
-  } else {
-    await api.create(data);
+  try {
+    if (state.editingId) {
+      await bridge.update(state.editingId, data);
+    } else {
+      await bridge.create(data);
+    }
+    closeEditor();
+    refreshList();
+  } catch (e) {
+    setEditorError('保存失败：' + (e && e.message || e));
   }
-  closeEditor();
-  refreshList();
 }
 
 // ---------- 事件绑定 ----------
@@ -242,7 +374,24 @@ function bind() {
   $('btn-editor-close').addEventListener('click', closeEditor);
   $('btn-editor-cancel').addEventListener('click', closeEditor);
   $('btn-editor-save').addEventListener('click', saveEditor);
-  $('btn-data-dir').addEventListener('click', () => api.openDataDir());
+  $('btn-data-dir').addEventListener('click', () => bridge.openDataDir());
+  $('nav-back').addEventListener('click', () => goNavOp('back'));
+  $('nav-fwd').addEventListener('click', () => goNavOp('forward'));
+  $('nav-reload').addEventListener('click', () => goNavOp('reload'));
+  $('nav-home').addEventListener('click', () => goNavOp('home'));
+  $('nav-url').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') navToUrl();
+    else if (e.key === 'Escape') { e.target.value = navCache[state.activeId] ? navCache[state.activeId].url : ''; e.target.blur(); }
+  });
+  $('nav-url').addEventListener('focus', (e) => { if (e.target.value) e.target.select(); });
+  $('btn-vpngate-help').addEventListener('click', () => {
+    bridge.openVpngate();
+    $('vpngate-tips').open = true;
+    // vpngate 公共中继账号固定 vpn/vpn：帮用户预填，省得手动输
+    const u = $('f-proxy-user'), pw = $('f-proxy-pass');
+    if (!u.value.trim()) u.value = 'vpn';
+    if (!pw.value.trim()) pw.value = 'vpn';
+  });
   $('f-ua-preset').addEventListener('change', onUaPresetChange);
   $('editor-mask').addEventListener('click', (e) => {
     if (e.target === $('editor-mask')) closeEditor();
@@ -257,4 +406,16 @@ function bind() {
   bind();
   await loadPresets();
   await refreshList();
+  reportViewBounds();
+  window.addEventListener('resize', () => reportViewBounds());
+  // 环境被停止/关闭 → 主进程通知刷新卡片与标签
+  bridge.onListChanged(() => refreshList());
+  // 主窗口缩放 → 主进程请求重报舞台坐标
+  bridge.onRequestBounds(() => reportViewBounds());
+  // 页面导航变化 → 主进程回推 URL/可后退/可前进，驱动地址栏
+  bridge.onNavigated((p) => {
+    if (!p || !p.id) return;
+    navCache[p.id] = { url: p.url || '', canBack: !!p.canBack, canFwd: !!p.canFwd };
+    applyNavBar();
+  });
 })();

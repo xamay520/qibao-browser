@@ -74,7 +74,7 @@ class ProfileStore {
       id: newId(),
       name: String(input.name || '新环境'),
       createdAt: Date.now(),
-      homepage: input.homepage || 'https://www.baidu.com',
+      homepage: input.homepage || 'https://qibao.online',
       proxy: input.proxy || { type: '', host: '', port: '', username: '', password: '' },
       fingerprint: fp,
     };

@@ -4,7 +4,7 @@
  * 环境管理 / 独立 session 隔离 / 代理 / 指纹注入 / 窗口生命周期
  */
 
-const { app, BrowserWindow, ipcMain, dialog, session } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -14,8 +14,9 @@ const { ProfileStore } = require('./store');
 // ---------- 便携化 userData ----------
 // 数据放在应用目录旁的 user-data/（D 盘），避免 C 盘空间不足导致运行失败，
 // 也便于整体备份迁移。必须在任何 getPath('userData') 之前设置。
+// 测试/多实例可用环境变量 QIBAO_USER_DATA 覆盖到隔离目录。
 try {
-  app.setPath('userData', path.join(__dirname, 'user-data'));
+  app.setPath('userData', process.env.QIBAO_USER_DATA || path.join(__dirname, 'user-data'));
 } catch (_) {}
 
 // ---------- 全局指纹相关开关 ----------
@@ -37,8 +38,24 @@ const isDev = !app.isPackaged;
 // 验证主进程 + 渲染进程 + IPC 全链路，2 秒后自动退出
 const isSmokeTest = process.argv.includes('--smoke-test');
 
-let mainWindow = null;        // 管理界面
-const envWindows = new Map(); // id -> BrowserWindow
+// ---------- 单实例锁 ----------
+// 防止重复启动（如连点桌面图标）导致多个实例并发读写 user-data/ 互相冲突
+// 表现为：点保存没反应、数据丢失、界面异常。第二个实例自动退出并聚焦已有窗口。
+if (!isSmokeTest && !app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
+let mainWindow = null;           // 管理界面（左侧环境列表 + 右侧浏览器舞台）
+const envViews = new Map();      // id -> WebContentsView（每个环境一个内嵌视图，并存可切换）
+let activeEnvId = null;          // 当前显示在舞台上的环境 id
+let envViewBounds = null;        // 舞台布局 {x,y,width,height}（由 renderer 上报）
 
 const store = new ProfileStore(path.join(app.getPath('userData'), 'profiles.json'));
 
@@ -88,66 +105,157 @@ async function setupSession(profile) {
   return ses;
 }
 
-// 启动一个环境窗口
-async function startEnv(profileId) {
-  if (envWindows.has(profileId)) {
-    const win = envWindows.get(profileId);
-    if (!win.isDestroyed()) { win.focus(); return { ok: true, message: '已在前台' }; }
-    envWindows.delete(profileId);
+// ---------- 环境视图（多 WebContentsView 内嵌主窗口，显隐切换） ----------
+
+// 把所有环境视图贴到同一舞台区域（同一时刻只显示一个）
+function applyAllViewBounds() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  let b = envViewBounds;
+  if (!b) {
+    // 尚未收到 renderer 上报：默认铺满右侧（左侧管理栏约 340px）
+    const [w, h] = mainWindow.getContentSize();
+    b = { x: 340, y: 0, width: Math.max(300, w - 340), height: h };
   }
+  for (const v of envViews.values()) {
+    try { v.setBounds(b); } catch (_) {}
+  }
+}
+
+// 只显示 id 对应视图，其余隐藏。id=null 时全部隐藏（编辑面板打开等场景）
+function showEnvView(id) {
+  activeEnvId = id;
+  for (const [k, v] of envViews) {
+    try { v.setVisible(k === id); } catch (_) {}
+  }
+}
+
+// 主窗口所有内容视图统一显隐（编辑面板遮罩场景）
+function setAllViewsVisible(visible) {
+  for (const [, v] of envViews) {
+    try { v.setVisible(!!visible); } catch (_) {}
+  }
+}
+
+// 把某环境视图的导航状态（URL / 能否后退前进）推给 renderer，驱动地址栏
+function emitNavState(profileId) {
+  const v = envViews.get(profileId);
+  if (!v || v.webContents.isDestroyed()) return;
+  const wc = v.webContents;
+  let url = '', canBack = false, canFwd = false;
+  try {
+    url = wc.getURL();
+    canBack = wc.navigationHistory.canGoBack();
+    canFwd = wc.navigationHistory.canGoForward();
+  } catch (_) {}
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send('env:navigated', { id: profileId, url, canBack, canFwd });
+  }
+}
+
+// 切换到一个已在运行的环境（不重建，直接显隐切换）
+function activateEnv(profileId) {
+  if (!envViews.has(profileId)) return { ok: false, message: '未在运行' };
+  const v = envViews.get(profileId);
+  if (!v || v.webContents.isDestroyed()) {
+    envViews.delete(profileId);
+    return { ok: false, message: '未在运行' };
+  }
+  showEnvView(profileId);
+  emitNavState(profileId); // 切换后立即把该环境的当前 URL/按钮态推给地址栏
+  return { ok: true, message: '已切换' };
+}
+
+// 启动环境：首次创建视图挂进主窗口；已在运行则切换到前台
+async function startEnv(profileId) {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, message: '主窗口未就绪' };
+
+  // 已在运行 → 切到前台（页面状态保留，不重新加载）
+  const existing = envViews.get(profileId);
+  if (existing && !existing.webContents.isDestroyed()) {
+    showEnvView(profileId);
+    return { ok: true, message: '已切换' };
+  }
+  envViews.delete(profileId); // 清残留
+
   const profile = store.get(profileId);
   if (!profile) return { ok: false, message: '环境不存在' };
 
   const preload = writeEnvPreload(profile);
   const ses = await setupSession(profile);
 
-  const win = new BrowserWindow({
-    width: profile.fingerprint?.screen?.width || 1280,
-    height: profile.fingerprint?.screen?.height || 800,
-    minWidth: 640,
-    minHeight: 480,
-    title: profile.name,
-    autoHideMenuBar: true,
+  const view = new WebContentsView({
     webPreferences: {
       preload,
-      contextIsolation: false,   // 指纹注入需要主世界
+      contextIsolation: false,                 // 指纹注入需要主世界
       nodeIntegration: false,
-      partition: `persist:env-${profileId}`,
+      partition: `persist:env-${profileId}`,   // 各环境 cookie/storage 持久化互不干扰
       sandbox: false,
     },
   });
+  envViews.set(profileId, view);
+
+  view.webContents.on('destroyed', () => {
+    envViews.delete(profileId);
+    if (activeEnvId === profileId) activeEnvId = null;
+    notifyListChanged();
+  });
+
+  // 页面导航变化 → 通知 renderer 同步地址栏（did-fail-load 兜底：输入错误网址也回显）
+  const wc = view.webContents;
+  wc.on('did-navigate', () => emitNavState(profileId));
+  wc.on('did-navigate-in-page', () => emitNavState(profileId));
+  wc.on('did-fail-load', (_e, _code, _desc, _url, isMainFrame) => {
+    if (isMainFrame) emitNavState(profileId);
+  });
+
+  mainWindow.contentView.addChildView(view);
+  applyAllViewBounds();
+  showEnvView(profileId);   // 隐藏其它视图、显示新环境
 
   // HTTP 层 UA 与 JS 层 navigator.userAgent 保持一致
-  if (profile.fingerprint?.ua) {
-    ses.setUserAgent(profile.fingerprint.ua);
-  }
+  if (profile.fingerprint?.ua) ses.setUserAgent(profile.fingerprint.ua);
 
-  envWindows.set(profileId, win);
-  win.on('closed', () => envWindows.delete(profileId));
-
-  const homepage = profile.homepage || 'https://www.baidu.com';
-  await win.loadURL(homepage);
+  const homepage = profile.homepage || 'https://qibao.online';
+  try { await view.webContents.loadURL(homepage); }
+  catch (_) { /* 加载失败不致命，用户可在页面内重试 */ }
   return { ok: true, message: '已启动' };
 }
 
 function stopEnv(profileId) {
-  const win = envWindows.get(profileId);
-  if (win && !win.isDestroyed()) {
-    win.close();
-    envWindows.delete(profileId);
-    return { ok: true, message: '已停止' };
+  const view = envViews.get(profileId);
+  if (!view) return { ok: false, message: '未在运行' };
+  try { mainWindow?.contentView.removeChildView(view); } catch (_) {}
+  try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch (_) {}
+  envViews.delete(profileId);
+  if (activeEnvId === profileId) {
+    // 停止的是当前显示的环境 → 把 active 移交给第一个仍在运行的环境
+    const next = [...envViews.keys()].find((id) => envStatus(id)) || null;
+    activeEnvId = next;
+    if (next) showEnvView(next);
   }
-  return { ok: false, message: '未在运行' };
+  notifyListChanged();
+  return { ok: true, message: '已停止' };
 }
 
 function envStatus(profileId) {
-  const win = envWindows.get(profileId);
-  return !!(win && !win.isDestroyed());
+  const v = envViews.get(profileId);
+  return !!(v && !v.webContents.isDestroyed());
+}
+
+function envActive(profileId) {
+  return envStatus(profileId) && activeEnvId === profileId;
+}
+
+// 通知 renderer 刷新卡片（环境关闭/停止时）
+function notifyListChanged() {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send('env:list-changed');
+  }
 }
 
 // ---------- IPC ----------
 function registerIpc() {
-  ipcMain.handle('env:list', () => store.list().map((p) => ({ ...p, running: envStatus(p.id) })));
+  ipcMain.handle('env:list', () => store.list().map((p) => ({ ...p, running: envStatus(p.id), active: envActive(p.id) })));
   ipcMain.handle('env:create', (_e, data) => {
     const profile = store.create(data);
     writeEnvPreload(profile);
@@ -170,6 +278,49 @@ function registerIpc() {
   });
   ipcMain.handle('env:start', (_e, id) => startEnv(id));
   ipcMain.handle('env:stop', (_e, id) => stopEnv(id));
+  ipcMain.handle('env:activate', (_e, id) => activateEnv(id));
+  // 地址栏跳转：无协议自动补 https://
+  ipcMain.handle('env:navigate', (_e, id, rawUrl) => {
+    const v = envViews.get(id);
+    if (!v || v.webContents.isDestroyed()) return { ok: false, message: '环境未在运行' };
+    let url = String(rawUrl || '').trim();
+    if (!url) return { ok: false, message: '网址为空' };
+    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url)) url = 'https://' + url;
+    v.webContents.loadURL(url).catch(() => {});
+    return { ok: true };
+  });
+  // 工具条操作：back / forward / reload / home
+  ipcMain.handle('env:nav-op', (_e, id, op) => {
+    const v = envViews.get(id);
+    if (!v || v.webContents.isDestroyed()) return { ok: false, message: '环境未在运行' };
+    try {
+      const wc = v.webContents;
+      const nav = wc.navigationHistory;
+      if (op === 'back') { if (nav.canGoBack()) nav.goBack(); }
+      else if (op === 'forward') { if (nav.canGoForward()) nav.goForward(); }
+      else if (op === 'reload') { wc.reload(); }
+      else if (op === 'home') {
+        const p = store.get(id);
+        wc.loadURL(p && p.homepage ? p.homepage : 'https://qibao.online').catch(() => {});
+      }
+    } catch (e) {
+      return { ok: false, message: (e && e.message) || String(e) };
+    }
+    return { ok: true };
+  });
+  ipcMain.handle('env:view-bounds', (_e, rect) => {
+    if (rect && typeof rect.x === 'number') { envViewBounds = rect; applyAllViewBounds(); }
+    return { ok: true };
+  });
+  ipcMain.handle('env:view-visible', (_e, visible) => {
+    // 编辑面板打开时全部隐藏；关闭时恢复显示当前活动环境
+    if (visible) {
+      if (activeEnvId) showEnvView(activeEnvId);
+    } else {
+      setAllViewsVisible(false);
+    }
+    return { ok: true };
+  });
   ipcMain.handle('env:open-data-dir', () => {
     const dir = ENV_USER_DATA();
     fs.mkdirSync(dir, { recursive: true });
@@ -179,6 +330,11 @@ function registerIpc() {
   });
   ipcMain.handle('meta:presets', () => ({ ua: UA_PRESETS, timezones: TIMEZONES, webgl: WEBGL_PRESETS }));
   ipcMain.handle('meta:tz-offset', (_e, tz) => tzOffsetMinutes(tz));
+  ipcMain.handle('meta:open-vpngate', () => {
+    const { shell } = require('electron');
+    shell.openExternal('https://www.vpngate.net/cn/');
+    return { ok: true };
+  });
 }
 
 // ---------- 主窗口 ----------
@@ -188,7 +344,7 @@ function createMainWindow() {
     height: 760,
     minWidth: 960,
     minHeight: 600,
-    title: 'FB Manager 指纹浏览器',
+    title: '七宝浏览器 · 环境管理',
     backgroundColor: '#14161a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -197,7 +353,21 @@ function createMainWindow() {
     },
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    // 管理窗口关闭 → 销毁所有环境视图，避免孤儿进程
+    for (const [, v] of envViews) {
+      try { if (!v.webContents.isDestroyed()) v.webContents.close(); } catch (_) {}
+    }
+    envViews.clear();
+    activeEnvId = null;
+  });
+  // 窗口缩放时请求 renderer 重新上报内容区坐标，所有视图同步贴齐
+  mainWindow.on('resize', () => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('env:request-bounds');
+    }
+  });
 }
 
 // ---------- 生命周期 ----------
@@ -207,7 +377,7 @@ app.whenReady().then(() => {
   createMainWindow();
 
   if (isSmokeTest) {
-    // 冒烟测试：等窗口加载完成后验证 IPC 链路，然后退出
+    // 冒烟测试：等窗口加载完成后验证 IPC 链路 + 独立窗口生成 + title，然后退出
     const smokeResult = path.join(__dirname, 'smoke-result.txt');
     const writeSmoke = (text) => { try { fs.writeFileSync(smokeResult, text, 'utf8'); } catch (_) {} };
     mainWindow.webContents.once('did-finish-load', async () => {
@@ -221,9 +391,43 @@ app.whenReady().then(() => {
         const listed = await mainWindow.webContents.executeJavaScript('window.api.list()');
         const found = listed.some((p) => p.id === created);
         if (!found) throw new Error('create 后 list 未包含新环境');
-        // 清理冒烟环境
+
+        // 内嵌多视图验证：start 后不应产生新 BrowserWindow
+        const started = await mainWindow.webContents.executeJavaScript(`window.api.start(${JSON.stringify(created)})`);
+        if (!started || !started.ok) throw new Error('start() 失败: ' + (started && started.message));
+        await new Promise((r) => setTimeout(r, 600));
+        const winCount = BrowserWindow.getAllWindows().length;
+        if (winCount !== 1) throw new Error('内嵌模式下应只有 1 个 BrowserWindow，实际 ' + winCount);
+        const v1 = envViews.get(created);
+        if (!v1 || v1.webContents.isDestroyed()) throw new Error('环境视图未注册到 envViews Map');
+        if (activeEnvId !== created) throw new Error('启动后应激活该环境');
+        const bounds = v1.getBounds();
+        if (!(bounds.width > 200 && bounds.height > 200)) throw new Error('视图 bounds 异常: ' + JSON.stringify(bounds));
+
+        // 并存验证：启动第二个环境，两个视图都存活，且切换后 active 正确
+        const created2 = await mainWindow.webContents.executeJavaScript(
+          'window.api.create({ name: "__smoke2__", homepage: "about:blank" }).then(r => r.id)'
+        );
+        const started2 = await mainWindow.webContents.executeJavaScript(`window.api.start(${JSON.stringify(created2)})`);
+        if (!started2 || !started2.ok) throw new Error('start2() 失败');
+        await new Promise((r) => setTimeout(r, 600));
+        if (envViews.size !== 2) throw new Error('两环境应并存，实际视图数 ' + envViews.size);
+        if (activeEnvId !== created2) throw new Error('切到第二环境后 active 应更新');
+        // 切回第一个：不应重建视图（对象相同）
+        const v1Again = envViews.get(created);
+        if (v1Again !== v1) throw new Error('切换不应重建视图');
+        const back = await mainWindow.webContents.executeJavaScript(`window.api.activate(${JSON.stringify(created)})`);
+        if (!back || !back.ok) throw new Error('activate() 失败');
+        if (activeEnvId !== created) throw new Error('切回第一环境后 active 应更新');
+
+        // 停止 + 清理
+        await mainWindow.webContents.executeJavaScript(`window.api.stop(${JSON.stringify(created2)})`);
+        await new Promise((r) => setTimeout(r, 300));
+        await mainWindow.webContents.executeJavaScript(`window.api.stop(${JSON.stringify(created)})`);
+        await new Promise((r) => setTimeout(r, 300));
+        await mainWindow.webContents.executeJavaScript(`window.api.remove(${JSON.stringify(created2)})`);
         await mainWindow.webContents.executeJavaScript(`window.api.remove(${JSON.stringify(created)})`);
-        writeSmoke('ALL PASS: renderer IPC + store 全链路 OK\n');
+        writeSmoke('ALL PASS: IPC + store + 多视图内嵌并存切换 全链路 OK\n');
         console.log('[smoke] ALL PASS');
       } catch (e) {
         writeSmoke('FAIL: ' + (e && e.message || String(e)) + '\n');

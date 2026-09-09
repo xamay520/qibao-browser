@@ -1,0 +1,4 @@
+# 强制 Windows 批处理/脚本以 CRLF 检出，避免双击 start.cmd 黑框闪退
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.vbs text eol=crlf
