@@ -132,12 +132,27 @@ async function navToUrl() {
   const input = $('nav-url');
   let v = input.value.trim();
   if (!v) return;
-  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(v)) {
+  // 裸盘符路径 D:/x 或 D:\x → 补成 file:/// 三斜杠（与 Chromium getURL() 一致）
+  if (/^[a-zA-Z]:[\\/]/.test(v)) {
+    v = 'file:///' + v.replace(/\\/g, '/');
+  } else if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(v)) {
     // 无协议：localhost/127 开头走 http，其余按 https 处理
     v = /^(localhost|127\.|\[::1\])/.test(v) ? 'http://' + v : 'https://' + v;
   }
   input.blur();
   await bridge.navigate(state.activeId, v);
+}
+
+// 导航诊断（超时/失败）：短暂提示到地址栏右侧，8s 后自动消失
+let navDiagTimer = null;
+function showNavDiag(p) {
+  const el = $('nav-diag');
+  if (!el) return;
+  el.textContent = (p && p.message) || '加载异常';
+  el.classList.toggle('err', !!(p && p.error));
+  el.hidden = false;
+  if (navDiagTimer) clearTimeout(navDiagTimer);
+  navDiagTimer = setTimeout(() => { el.hidden = true; }, 8000);
 }
 
 // 顶部标签条：每个运行中的环境一个标签，点击切换、× 停止
@@ -418,4 +433,6 @@ function bind() {
     navCache[p.id] = { url: p.url || '', canBack: !!p.canBack, canFwd: !!p.canFwd };
     applyNavBar();
   });
+  // 导航超时/失败诊断（30s 加载不出 / 本地文件不存在等）
+  bridge.onDiagnostic((p) => showNavDiag(p));
 })();

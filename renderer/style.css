@@ -170,6 +170,14 @@ body {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 #nav-url:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.18); }
+.nav-diag {
+  flex: 0 0 auto; max-width: 320px;
+  font-size: 11.5px; color: var(--text-dim);
+  padding: 3px 10px; border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nav-diag.err { color: #ffd2cf; background: rgba(255, 95, 86, 0.16); }
 
 .view-host { flex: 1; position: relative; overflow: hidden; min-width: 0; }
 .stage-empty {

@@ -10,6 +10,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { buildInjectScript, UA_PRESETS, TIMEZONES, WEBGL_PRESETS, tzOffsetMinutes } = require('./fingerprint-injector');
 const { ProfileStore } = require('./store');
+const { normalizeUrl } = require('./url-utils');
 
 // ---------- 便携化 userData ----------
 // 开发版：数据放在项目旁的 user-data/，避免 C 盘空间不足，也便于整体备份迁移。
@@ -111,6 +112,41 @@ async function setupSession(profile) {
     }
   });
   return ses;
+}
+
+// ---------- 带超时的导航加载（超时只诊断不上崩） ----------
+// v3 根因修复：本地 file:// 路径若与 getURL() 规范形式不一致会"切不动/超时"。
+// 这里统一先 normalize，并给 loadURL 加 30s 超时——超时/失败只向 renderer 上报诊断，
+// 不 reject（页面可能仍在后台加载），避免 UI 假死。
+const NAV_TIMEOUT_MS = 30000;
+function loadWithTimeout(view, url, profileId) {
+  const wc = view.webContents;
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const msg = `加载超过 ${NAV_TIMEOUT_MS / 1000}s 未结束（可能：本地文件不存在 / 无网络 / 资源被墙阻塞）`;
+      console.warn(`[nav] env ${profileId} 超时 ${NAV_TIMEOUT_MS}ms: ${url}`);
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send('env:nav-diagnostic', { id: profileId, message: msg, url });
+      }
+      resolve({ ok: true, timedOut: true });
+    }, NAV_TIMEOUT_MS);
+    wc.loadURL(url).then(() => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); resolve({ ok: true });
+    }).catch((e) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      const msg = '加载失败：' + ((e && e.message) || e);
+      console.warn(`[nav] env ${profileId} 失败: ${url} -> ${msg}`);
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send('env:nav-diagnostic', { id: profileId, message: msg, url, error: true });
+      }
+      resolve({ ok: false, message: msg });
+    });
+  });
 }
 
 // ---------- 环境视图（多 WebContentsView 内嵌主窗口，显隐切换） ----------
@@ -223,9 +259,11 @@ async function startEnv(profileId) {
   // HTTP 层 UA 与 JS 层 navigator.userAgent 保持一致
   if (profile.fingerprint?.ua) ses.setUserAgent(profile.fingerprint.ua);
 
-  const homepage = profile.homepage || 'https://qibao.online';
-  try { await view.webContents.loadURL(homepage); }
-  catch (_) { /* 加载失败不致命，用户可在页面内重试 */ }
+  // 导航开始即回推一次（地址栏及时跟随，不必等加载完成）
+  wc.on('did-start-loading', () => emitNavState(profileId));
+
+  const homepage = normalizeUrl(profile.homepage || 'https://qibao.online');
+  await loadWithTimeout(view, homepage, profileId); // 规范化 + 超时诊断
   return { ok: true, message: '已启动' };
 }
 
@@ -287,15 +325,15 @@ function registerIpc() {
   ipcMain.handle('env:start', (_e, id) => startEnv(id));
   ipcMain.handle('env:stop', (_e, id) => stopEnv(id));
   ipcMain.handle('env:activate', (_e, id) => activateEnv(id));
-  // 地址栏跳转：无协议自动补 https://
+  // 地址栏跳转：无协议自动补 https://，file:// 规范化
   ipcMain.handle('env:navigate', (_e, id, rawUrl) => {
     const v = envViews.get(id);
     if (!v || v.webContents.isDestroyed()) return { ok: false, message: '环境未在运行' };
     let url = String(rawUrl || '').trim();
     if (!url) return { ok: false, message: '网址为空' };
     if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url)) url = 'https://' + url;
-    v.webContents.loadURL(url).catch(() => {});
-    return { ok: true };
+    url = normalizeUrl(url); // 两斜杠 → 三斜杠，避免与 getURL() 不一致
+    return loadWithTimeout(v, url, id).then(() => ({ ok: true }));
   });
   // 工具条操作：back / forward / reload / home
   ipcMain.handle('env:nav-op', (_e, id, op) => {
@@ -309,7 +347,8 @@ function registerIpc() {
       else if (op === 'reload') { wc.reload(); }
       else if (op === 'home') {
         const p = store.get(id);
-        wc.loadURL(p && p.homepage ? p.homepage : 'https://qibao.online').catch(() => {});
+        const home = normalizeUrl(p && p.homepage ? p.homepage : 'https://qibao.online');
+        await loadWithTimeout(v, home, id);
       }
     } catch (e) {
       return { ok: false, message: (e && e.message) || String(e) };

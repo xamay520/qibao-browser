@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('api', {
   onListChanged: (cb) => ipcRenderer.on('env:list-changed', () => cb()),
   onRequestBounds: (cb) => ipcRenderer.on('env:request-bounds', () => cb()),
   onNavigated: (cb) => ipcRenderer.on('env:navigated', (_e, payload) => cb(payload)),
+  onDiagnostic: (cb) => ipcRenderer.on('env:nav-diagnostic', (_e, payload) => cb(payload)),
   presets: () => ipcRenderer.invoke('meta:presets'),
   tzOffset: (tz) => ipcRenderer.invoke('meta:tz-offset', tz),
 });

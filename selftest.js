@@ -36,6 +36,7 @@ function tmpStore() {
 console.log('== fingerprint-injector ==\n');
 
 const { buildInjectScript, UA_PRESETS, TIMEZONES, WEBGL_PRESETS, tzOffsetMinutes } = require('./fingerprint-injector');
+const { normalizeUrl } = require('./url-utils');
 
 test('buildInjectScript 默认配置生成合法 JS 语法', () => {
   const script = buildInjectScript({});
@@ -96,6 +97,25 @@ test('canvas 噪声确定性（同种子输出一致）', () => {
   assert.strictEqual(a, b);
   const c = buildInjectScript({ canvasSeed: 99999 });
   assert.notStrictEqual(a, c);
+});
+
+console.log('\n== url-utils (file:// 斜杠规范化) ==\n');
+
+test('normalizeUrl file:// 两/一斜杠统一为三斜杠', () => {
+  assert.strictEqual(normalizeUrl('file://D:/a.html'), 'file:///D:/a.html');
+  assert.strictEqual(normalizeUrl('file:/D:/a.html'), 'file:///D:/a.html');
+  assert.strictEqual(normalizeUrl('file:///D:/a.html'), 'file:///D:/a.html'); // 幂等
+  assert.strictEqual(normalizeUrl('file://C:/Users/x/y.html'), 'file:///C:/Users/x/y.html');
+});
+
+test('normalizeUrl 裸盘符路径 D:/x 或 D:\\x → file:///', () => {
+  assert.strictEqual(normalizeUrl('D:/a.html'), 'file:///D:/a.html');
+  assert.strictEqual(normalizeUrl('D:\\a.html'), 'file:///D:/a.html');
+});
+
+test('normalizeUrl 不影响 http(s) 与普通串', () => {
+  assert.strictEqual(normalizeUrl('https://qibao.online'), 'https://qibao.online');
+  assert.strictEqual(normalizeUrl('qibao.online'), 'qibao.online');
 });
 
 console.log('\n== ProfileStore ==\n');
