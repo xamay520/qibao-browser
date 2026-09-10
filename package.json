@@ -1,7 +1,7 @@
 {
   "name": "qibao-browser",
   "productName": "七宝浏览器",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "七宝浏览器：本地指纹浏览器，多环境隔离 · 代理 · 指纹伪装",
   "main": "main.js",
   "private": true,
@@ -14,7 +14,8 @@
   },
   "devDependencies": {
     "electron": "^37.2.0",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "png-to-ico": "^3.0.2"
   },
   "build": {
     "appId": "com.qibao.browser",
@@ -29,12 +30,14 @@
       "store.js",
       "fingerprint-injector.js",
       "url-utils.js",
+      "icon.ico",
       "renderer/**/*",
       "README.md",
       "VPNGATE.md",
       "七宝浏览器使用说明.md",
       "LICENSE"
     ],
+    "icon": "icon.ico",
     "win": {
       "target": [
         {

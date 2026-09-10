@@ -336,7 +336,7 @@ function registerIpc() {
     return loadWithTimeout(v, url, id).then(() => ({ ok: true }));
   });
   // 工具条操作：back / forward / reload / home
-  ipcMain.handle('env:nav-op', (_e, id, op) => {
+  ipcMain.handle('env:nav-op', async (_e, id, op) => {
     const v = envViews.get(id);
     if (!v || v.webContents.isDestroyed()) return { ok: false, message: '环境未在运行' };
     try {
