@@ -1,7 +1,7 @@
 {
   "name": "qibao-browser",
   "productName": "七宝浏览器",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "七宝浏览器：本地指纹浏览器，多环境隔离 · 代理 · 指纹伪装",
   "main": "main.js",
   "private": true,

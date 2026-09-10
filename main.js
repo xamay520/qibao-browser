@@ -262,6 +262,13 @@ async function startEnv(profileId) {
   // 导航开始即回推一次（地址栏及时跟随，不必等加载完成）
   wc.on('did-start-loading', () => emitNavState(profileId));
 
+  // 所有新窗口请求（<a target="_blank"> / window.open / Ctrl+点击）一律在当前视图内打开，
+  // 不弹独立原生窗口——指纹浏览器应始终待在主界面里。
+  wc.setWindowOpenHandler(({ url: openUrl }) => {
+    try { wc.loadURL(openUrl); } catch (_) {}
+    return { action: 'deny' };
+  });
+
   const homepage = normalizeUrl(profile.homepage || 'https://qibao.online');
   await loadWithTimeout(view, homepage, profileId); // 规范化 + 超时诊断
   return { ok: true, message: '已启动' };
@@ -305,6 +312,7 @@ function registerIpc() {
   ipcMain.handle('env:create', (_e, data) => {
     const profile = store.create(data);
     writeEnvPreload(profile);
+    notifyListChanged(); // 新建后通知渲染端刷新卡片列表（无需手动 refreshList）
     return { ...profile, running: false };
   });
   ipcMain.handle('env:update', (_e, id, data) => {
@@ -313,6 +321,7 @@ function registerIpc() {
       writeEnvPreload(profile);
       // 运行中则重启以应用新配置
       if (envStatus(id)) { stopEnv(id); startEnv(id); }
+      notifyListChanged(); // 更新后通知渲染端刷新卡片列表
     }
     return profile ? { ...profile, running: envStatus(id) } : null;
   });
@@ -466,6 +475,40 @@ app.whenReady().then(() => {
         const back = await mainWindow.webContents.executeJavaScript(`window.api.activate(${JSON.stringify(created)})`);
         if (!back || !back.ok) throw new Error('activate() 失败');
         if (activeEnvId !== created) throw new Error('切回第一环境后 active 应更新');
+
+        // 导航测试：地址栏 navigate 应真正改变视图 URL（验证"能不能改网址"）
+        const targetFile = 'file:///' + path.join(__dirname, 'renderer', 'index.html').replace(/\\/g, '/');
+        const navRes = await mainWindow.webContents.executeJavaScript(
+          `window.api.navigate(${JSON.stringify(created)}, ${JSON.stringify(targetFile)})`
+        );
+        if (!navRes || !navRes.ok) throw new Error('navigate() 返回: ' + JSON.stringify(navRes));
+        await new Promise((r) => setTimeout(r, 1500));
+        const navUrl = v1.webContents.getURL();
+        if (!/index\.html$/.test(navUrl)) throw new Error('navigate 后视图 URL 未变更: ' + navUrl);
+
+        // 新窗口拦截测试：视图内 window.open 应被当前视图 loadURL，且不产生新 BrowserWindow
+        const winBefore = BrowserWindow.getAllWindows().length;
+        await v1.webContents.executeJavaScript(`window.open(${JSON.stringify(targetFile)})`);
+        await new Promise((r) => setTimeout(r, 1500));
+        const winAfter = BrowserWindow.getAllWindows().length;
+        if (winAfter !== winBefore) throw new Error('setWindowOpenHandler 未生效，窗口数 ' + winBefore + '→' + winAfter);
+        const openUrl = v1.webContents.getURL();
+        if (!/index\.html$/.test(openUrl)) throw new Error('window.open 后当前视图 URL 未变更: ' + openUrl);
+
+        // 渲染端导航测试：直接走 navToUrl 完整链路（activeId 已由前面的 start/activate → refreshList → applyNav 设置）
+        const rendererTarget = 'file:///' + path.join(__dirname, 'url-utils.js').replace(/\\/g, '/');
+        const rdbg = await mainWindow.webContents.executeJavaScript(`
+          (async () => {
+            const inp = document.getElementById('nav-url');
+            if (!inp) return { err: 'nav-url 输入不存在' };
+            inp.value = ${JSON.stringify(rendererTarget)};
+            inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+            return {};
+          })()
+        `);
+        await new Promise((r) => setTimeout(r, 1800));
+        const rNavUrl = v1.webContents.getURL();
+        if (!/url-utils\.js$/.test(rNavUrl)) throw new Error('渲染端 navToUrl 后视图 URL 未变更: ' + rNavUrl);
 
         // 停止 + 清理
         await mainWindow.webContents.executeJavaScript(`window.api.stop(${JSON.stringify(created2)})`);
