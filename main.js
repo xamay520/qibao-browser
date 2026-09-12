@@ -180,19 +180,20 @@ function setAllViewsVisible(visible) {
   }
 }
 
-// 把某环境视图的导航状态（URL / 能否后退前进）推给 renderer，驱动地址栏
+// 把某环境视图的导航状态（URL / 能否后退前进 / 是否加载中）推给 renderer，驱动地址栏
 function emitNavState(profileId) {
   const v = envViews.get(profileId);
   if (!v || v.webContents.isDestroyed()) return;
   const wc = v.webContents;
-  let url = '', canBack = false, canFwd = false;
+  let url = '', canBack = false, canFwd = false, loading = false;
   try {
     url = wc.getURL();
     canBack = wc.navigationHistory.canGoBack();
     canFwd = wc.navigationHistory.canGoForward();
+    loading = wc.isLoading();
   } catch (_) {}
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
-    mainWindow.webContents.send('env:navigated', { id: profileId, url, canBack, canFwd });
+    mainWindow.webContents.send('env:navigated', { id: profileId, url, canBack, canFwd, loading });
   }
 }
 

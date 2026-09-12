@@ -99,6 +99,9 @@ async function refreshList() {
 
   renderTabs(list);
   applyNav(list);
+  // DOM 更新完成（stage-bar / nav-bar 显隐已确定）后再上报 view-host 坐标，
+  // 避免内嵌 WebContentsView 因沿用旧 bounds 而盖住地址栏/标签栏。
+  reportViewBounds();
 }
 
 // ---------- 浏览器工具条（地址栏 / 后退前进刷新主页） ----------
@@ -110,16 +113,37 @@ function applyNav(list) {
   applyNavBar();
 }
 
-// 把地址栏值/按钮态刷成当前 active 环境的缓存状态
+// 把地址栏值/按钮态/安全图标/加载态刷成当前 active 环境的缓存状态
 function applyNavBar() {
   const bar = $('nav-bar');
   if (!bar || bar.hidden || !state.activeId) return;
-  const st = navCache[state.activeId] || { url: '', canBack: false, canFwd: false };
+  const st = navCache[state.activeId] || { url: '', canBack: false, canFwd: false, loading: false };
   const input = $('nav-url');
   if (document.activeElement !== input) input.value = st.url; // 用户正在输入时不清空
-  input.placeholder = st.url ? '输入网址，回车访问' : '加载中… 输入网址回车访问';
+  input.placeholder = '输入网址，回车访问（如 qibao.online）';
   $('nav-back').disabled = !st.canBack;
   $('nav-fwd').disabled = !st.canFwd;
+
+  const loadingEl = $('url-loading');
+  if (loadingEl) loadingEl.hidden = !st.loading;
+
+  const icon = $('url-icon');
+  if (icon) {
+    const url = st.url || '';
+    if (url.startsWith('https://')) {
+      icon.classList.remove('insecure');
+      icon.title = '安全连接（HTTPS）';
+      icon.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`;
+    } else if (url.startsWith('http://')) {
+      icon.classList.add('insecure');
+      icon.title = '不安全连接（HTTP）';
+      icon.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`;
+    } else {
+      icon.classList.remove('insecure');
+      icon.title = '本地或特殊页面';
+      icon.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>`;
+    }
+  }
 }
 
 async function goNavOp(op) {
@@ -140,7 +164,13 @@ async function navToUrl() {
     v = /^(localhost|127\.|\[::1\])/.test(v) ? 'http://' + v : 'https://' + v;
   }
   input.blur();
-  await bridge.navigate(state.activeId, v);
+  const loadingEl = $('url-loading');
+  if (loadingEl) loadingEl.hidden = false;
+  try {
+    await bridge.navigate(state.activeId, v);
+  } finally {
+    // loading 态由主进程 did-navigate / did-fail-load 最终覆盖
+  }
 }
 
 // 导航诊断（超时/失败）：短暂提示到地址栏右侧，8s 后自动消失
@@ -204,22 +234,20 @@ async function toggleEnv(id, running) {
     const r = await bridge.start(id);
     if (!r.ok) alert(r.message || '启动失败');
   }
-  reportViewBounds();
-  refreshList();
+  await refreshList(); // 内部同步刷新 DOM 并上报最新 bounds
 }
 
 async function startEnv(id) {
   const r = await bridge.start(id);
   if (!r.ok) alert(r.message || '启动失败');
-  reportViewBounds();
-  refreshList();
+  // refreshList 内部会同步刷新 DOM 并上报最新 view-host bounds
+  await refreshList();
 }
 
 async function activateEnv(id) {
   const r = await bridge.activate(id);
   if (!r.ok && r.message !== '未在运行') alert(r.message || '切换失败');
-  reportViewBounds();
-  refreshList();
+  await refreshList();
 }
 
 // 编辑面板是 DOM 遮罩层；内嵌视图是原生层会盖住遮罩 → 打开面板时隐藏视图，关闭时恢复
@@ -419,20 +447,142 @@ function bind() {
 // ---------- 启动 ----------
 (async function init() {
   bind();
+  bindTour();
   await loadPresets();
-  await refreshList();
-  reportViewBounds();
-  window.addEventListener('resize', () => reportViewBounds());
+  await refreshList(); // 内部已上报初始 bounds
+  window.addEventListener('resize', () => {
+    reportViewBounds();
+    if (!$('site-tour').hidden) renderTourStep();
+  });
   // 环境被停止/关闭 → 主进程通知刷新卡片与标签
   bridge.onListChanged(() => refreshList());
   // 主窗口缩放 → 主进程请求重报舞台坐标
   bridge.onRequestBounds(() => reportViewBounds());
-  // 页面导航变化 → 主进程回推 URL/可后退/可前进，驱动地址栏
+  // 页面导航变化 → 主进程回推 URL/可后退/可前进，驱动地址栏；首次进入 qibao.online 触发站点导览
   bridge.onNavigated((p) => {
     if (!p || !p.id) return;
-    navCache[p.id] = { url: p.url || '', canBack: !!p.canBack, canFwd: !!p.canFwd };
+    navCache[p.id] = { url: p.url || '', canBack: !!p.canBack, canFwd: !!p.canFwd, loading: !!p.loading };
     applyNavBar();
+    if (p.id === state.activeId) startTourIfNeeded(p.url);
   });
   // 导航超时/失败诊断（30s 加载不出 / 本地文件不存在等）
   bridge.onDiagnostic((p) => showNavDiag(p));
 })();
+
+// ---------- qibao.online 站点导览 ----------
+const TOUR_KEY = 'qibao-tour-done-v1';
+let tourStep = -1;
+const tourSteps = [
+  {
+    title: '欢迎来到七序街 87 号',
+    desc: '七宝浏览器不是普通浏览器。每个环境都是独立的身份舱：单独的 cookie、缓存、代理和指纹。现在，我们用它进入 qibao.online。',
+    spotlight: null,
+  },
+  {
+    title: '推门进入 · Visitor',
+    desc: '还没准备好登记？点这里以访客身份逛一圈。你可以看到 1F 胶囊大厅和 15F 公共楼层。',
+    spotlight: (host) => ({ x: host.x + host.width * 0.06, y: host.bottom - 130, width: 190, height: 100 }),
+  },
+  {
+    title: '登记身份 · Identity',
+    desc: '想保存进度、领取任务、解锁 20/21/22F 部门楼层？在这里注册或登录。',
+    spotlight: (host) => ({ x: host.x + host.width * 0.37, y: host.bottom - 130, width: 190, height: 100 }),
+  },
+  {
+    title: 'Agent 入口 · 成为实习生',
+    desc: '面试通过后，你将以实习生身份进入七序科技，和霁、克劳德、曜、玄、烬、迹一起工作。',
+    spotlight: (host) => ({ x: host.x + host.width * 0.68, y: host.bottom - 130, width: 190, height: 100 }),
+  },
+  {
+    title: '地址栏就是飞船舵盘',
+    desc: '你现在在环境「1」里。在任何网站，都可以在这里改网址、前进后退、回主页。所有操作只影响当前环境，不会泄漏给其它环境。',
+    spotlight: (host) => ({ x: host.x, y: host.y + 38, width: host.width, height: 44 }),
+  },
+  {
+    title: '准备好了',
+    desc: '导览结束。点击「完成」，开始在七宝世界里的第一次探索。',
+    spotlight: null,
+  },
+];
+
+function isQibaoOnline(url) {
+  try { return new URL(url).hostname.toLowerCase().includes('qibao.online'); } catch (_) { return false; }
+}
+
+function startTourIfNeeded(url) {
+  if (!isQibaoOnline(url)) return;
+  if (localStorage.getItem(TOUR_KEY)) return;
+  if (tourStep >= 0) return; // 已在展示
+  startTour();
+}
+
+function startTour() {
+  tourStep = 0;
+  $('site-tour').hidden = false;
+  // WebContentsView 是原生层，会盖住 HTML overlay；导览期间先隐藏内嵌视图
+  bridge.setViewVisible(false);
+  renderTourStep();
+}
+
+function endTour() {
+  $('site-tour').hidden = true;
+  tourStep = -1;
+  localStorage.setItem(TOUR_KEY, '1');
+  bridge.setViewVisible(true); // 恢复当前激活环境视图
+}
+
+function renderTourStep() {
+  const step = tourSteps[tourStep];
+  $('tour-step').textContent = `${tourStep + 1} / ${tourSteps.length}`;
+  $('tour-title').textContent = step.title;
+  $('tour-desc').textContent = step.desc;
+  $('tour-progress-bar').style.width = `${((tourStep + 1) / tourSteps.length) * 100}%`;
+  $('tour-prev').hidden = tourStep === 0;
+  $('tour-next').textContent = tourStep === tourSteps.length - 1 ? '完成' : '下一步';
+
+  const host = $('view-host').getBoundingClientRect();
+  let rect = null;
+  if (step.spotlight) rect = step.spotlight(host);
+
+  const maskBg = $('tour-mask-bg');
+  const hole = $('tour-hole');
+  const card = $('tour-card');
+
+  maskBg.setAttribute('width', window.innerWidth);
+  maskBg.setAttribute('height', window.innerHeight);
+
+  if (rect) {
+    const pad = 8;
+    const x = Math.round(rect.x - pad);
+    const y = Math.round(rect.y - pad);
+    const w = Math.round(rect.width + pad * 2);
+    const h = Math.round(rect.height + pad * 2);
+    hole.setAttribute('x', x);
+    hole.setAttribute('y', y);
+    hole.setAttribute('width', w);
+    hole.setAttribute('height', h);
+    // 卡片放在 spotlight 下方或上方
+    const top = y + h + 18;
+    const fitsBelow = top + 220 <= window.innerHeight;
+    card.style.top = (fitsBelow ? top : Math.max(12, y - 210)) + 'px';
+    card.style.left = Math.min(Math.max(x + w / 2 - 180, 12), window.innerWidth - 384) + 'px';
+    card.style.transform = 'translate(0,0)';
+  } else {
+    hole.setAttribute('width', 0);
+    card.style.top = '50%';
+    card.style.left = '50%';
+    card.style.transform = 'translate(-50%, -50%)';
+  }
+}
+
+function bindTour() {
+  $('tour-next').addEventListener('click', () => {
+    if (tourStep >= tourSteps.length - 1) endTour();
+    else { tourStep++; renderTourStep(); }
+  });
+  $('tour-prev').addEventListener('click', () => {
+    if (tourStep > 0) { tourStep--; renderTourStep(); }
+  });
+  $('tour-skip').addEventListener('click', endTour);
+  $('tour-close').addEventListener('click', endTour);
+}
