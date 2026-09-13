@@ -447,142 +447,22 @@ function bind() {
 // ---------- 启动 ----------
 (async function init() {
   bind();
-  bindTour();
   await loadPresets();
   await refreshList(); // 内部已上报初始 bounds
   window.addEventListener('resize', () => {
     reportViewBounds();
-    if (!$('site-tour').hidden) renderTourStep();
   });
   // 环境被停止/关闭 → 主进程通知刷新卡片与标签
   bridge.onListChanged(() => refreshList());
   // 主窗口缩放 → 主进程请求重报舞台坐标
   bridge.onRequestBounds(() => reportViewBounds());
-  // 页面导航变化 → 主进程回推 URL/可后退/可前进，驱动地址栏；首次进入 qibao.online 触发站点导览
+  // 页面导航变化 → 主进程回推 URL/可后退/可前进，驱动地址栏
   bridge.onNavigated((p) => {
     if (!p || !p.id) return;
     navCache[p.id] = { url: p.url || '', canBack: !!p.canBack, canFwd: !!p.canFwd, loading: !!p.loading };
     applyNavBar();
-    if (p.id === state.activeId) startTourIfNeeded(p.url);
   });
   // 导航超时/失败诊断（30s 加载不出 / 本地文件不存在等）
   bridge.onDiagnostic((p) => showNavDiag(p));
 })();
 
-// ---------- qibao.online 站点导览 ----------
-const TOUR_KEY = 'qibao-tour-done-v1';
-let tourStep = -1;
-const tourSteps = [
-  {
-    title: '欢迎来到七序街 87 号',
-    desc: '七宝浏览器不是普通浏览器。每个环境都是独立的身份舱：单独的 cookie、缓存、代理和指纹。现在，我们用它进入 qibao.online。',
-    spotlight: null,
-  },
-  {
-    title: '推门进入 · Visitor',
-    desc: '还没准备好登记？点这里以访客身份逛一圈。你可以看到 1F 胶囊大厅和 15F 公共楼层。',
-    spotlight: (host) => ({ x: host.x + host.width * 0.06, y: host.bottom - 130, width: 190, height: 100 }),
-  },
-  {
-    title: '登记身份 · Identity',
-    desc: '想保存进度、领取任务、解锁 20/21/22F 部门楼层？在这里注册或登录。',
-    spotlight: (host) => ({ x: host.x + host.width * 0.37, y: host.bottom - 130, width: 190, height: 100 }),
-  },
-  {
-    title: 'Agent 入口 · 成为实习生',
-    desc: '面试通过后，你将以实习生身份进入七序科技，和霁、克劳德、曜、玄、烬、迹一起工作。',
-    spotlight: (host) => ({ x: host.x + host.width * 0.68, y: host.bottom - 130, width: 190, height: 100 }),
-  },
-  {
-    title: '地址栏就是飞船舵盘',
-    desc: '你现在在环境「1」里。在任何网站，都可以在这里改网址、前进后退、回主页。所有操作只影响当前环境，不会泄漏给其它环境。',
-    spotlight: (host) => ({ x: host.x, y: host.y + 38, width: host.width, height: 44 }),
-  },
-  {
-    title: '准备好了',
-    desc: '导览结束。点击「完成」，开始在七宝世界里的第一次探索。',
-    spotlight: null,
-  },
-];
-
-function isQibaoOnline(url) {
-  try { return new URL(url).hostname.toLowerCase().includes('qibao.online'); } catch (_) { return false; }
-}
-
-function startTourIfNeeded(url) {
-  if (!isQibaoOnline(url)) return;
-  if (localStorage.getItem(TOUR_KEY)) return;
-  if (tourStep >= 0) return; // 已在展示
-  startTour();
-}
-
-function startTour() {
-  tourStep = 0;
-  $('site-tour').hidden = false;
-  // WebContentsView 是原生层，会盖住 HTML overlay；导览期间先隐藏内嵌视图
-  bridge.setViewVisible(false);
-  renderTourStep();
-}
-
-function endTour() {
-  $('site-tour').hidden = true;
-  tourStep = -1;
-  localStorage.setItem(TOUR_KEY, '1');
-  bridge.setViewVisible(true); // 恢复当前激活环境视图
-}
-
-function renderTourStep() {
-  const step = tourSteps[tourStep];
-  $('tour-step').textContent = `${tourStep + 1} / ${tourSteps.length}`;
-  $('tour-title').textContent = step.title;
-  $('tour-desc').textContent = step.desc;
-  $('tour-progress-bar').style.width = `${((tourStep + 1) / tourSteps.length) * 100}%`;
-  $('tour-prev').hidden = tourStep === 0;
-  $('tour-next').textContent = tourStep === tourSteps.length - 1 ? '完成' : '下一步';
-
-  const host = $('view-host').getBoundingClientRect();
-  let rect = null;
-  if (step.spotlight) rect = step.spotlight(host);
-
-  const maskBg = $('tour-mask-bg');
-  const hole = $('tour-hole');
-  const card = $('tour-card');
-
-  maskBg.setAttribute('width', window.innerWidth);
-  maskBg.setAttribute('height', window.innerHeight);
-
-  if (rect) {
-    const pad = 8;
-    const x = Math.round(rect.x - pad);
-    const y = Math.round(rect.y - pad);
-    const w = Math.round(rect.width + pad * 2);
-    const h = Math.round(rect.height + pad * 2);
-    hole.setAttribute('x', x);
-    hole.setAttribute('y', y);
-    hole.setAttribute('width', w);
-    hole.setAttribute('height', h);
-    // 卡片放在 spotlight 下方或上方
-    const top = y + h + 18;
-    const fitsBelow = top + 220 <= window.innerHeight;
-    card.style.top = (fitsBelow ? top : Math.max(12, y - 210)) + 'px';
-    card.style.left = Math.min(Math.max(x + w / 2 - 180, 12), window.innerWidth - 384) + 'px';
-    card.style.transform = 'translate(0,0)';
-  } else {
-    hole.setAttribute('width', 0);
-    card.style.top = '50%';
-    card.style.left = '50%';
-    card.style.transform = 'translate(-50%, -50%)';
-  }
-}
-
-function bindTour() {
-  $('tour-next').addEventListener('click', () => {
-    if (tourStep >= tourSteps.length - 1) endTour();
-    else { tourStep++; renderTourStep(); }
-  });
-  $('tour-prev').addEventListener('click', () => {
-    if (tourStep > 0) { tourStep--; renderTourStep(); }
-  });
-  $('tour-skip').addEventListener('click', endTour);
-  $('tour-close').addEventListener('click', endTour);
-}

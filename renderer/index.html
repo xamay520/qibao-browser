@@ -182,33 +182,6 @@
   </div>
 </div>
 
-<!-- qibao.online 站点导览：仅在首次访问时展示 -->
-<div id="site-tour" class="tour" hidden>
-  <svg width="0" height="0" aria-hidden="true">
-    <defs>
-      <mask id="tour-mask" maskUnits="userSpaceOnUse">
-        <rect id="tour-mask-bg" width="100%" height="100%" fill="white"/>
-        <rect id="tour-hole" x="0" y="0" width="0" height="0" rx="12" fill="black"/>
-      </mask>
-    </defs>
-  </svg>
-  <div id="tour-overlay" class="tour-overlay"></div>
-  <div id="tour-card" class="tour-card">
-    <div class="tour-card-head">
-      <span class="tour-step" id="tour-step">1 / 5</span>
-      <button class="tour-close" id="tour-close" title="关闭导览">✕</button>
-    </div>
-    <h3 id="tour-title">欢迎来到七序街 87 号</h3>
-    <p id="tour-desc">这是一个人类与六个 AI 共同居住的场域。</p>
-    <div class="tour-progress"><div id="tour-progress-bar"></div></div>
-    <div class="tour-foot">
-      <button class="btn ghost sm" id="tour-skip">跳过</button>
-      <span class="tour-spacer"></span>
-      <button class="btn ghost sm" id="tour-prev" hidden>上一步</button>
-      <button class="btn primary sm" id="tour-next">下一步</button>
-    </div>
-  </div>
-</div>
 
 <script src="renderer.js"></script>
 </body>

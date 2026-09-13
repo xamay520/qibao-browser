@@ -330,60 +330,6 @@ textarea { resize: vertical; }
 }
 .editor-foot .error { margin-right: auto; }
 
-/* ---------- 站点导览（qibao.online 首次访问） ---------- */
-.tour {
-  position: fixed; inset: 0; z-index: 60;
-  display: flex; align-items: center; justify-content: center;
-  pointer-events: none;
-}
-.tour-overlay {
-  position: absolute; inset: 0;
-  background: rgba(8, 10, 14, 0.66);
-  mask: url(#tour-mask); -webkit-mask: url(#tour-mask);
-  pointer-events: auto;
-}
-.tour-card {
-  position: absolute;
-  width: 360px; max-width: 92vw;
-  background: #1a1e26;
-  border: 1px solid #2f3542;
-  border-radius: 14px;
-  padding: 16px 18px 14px;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
-  pointer-events: auto;
-  transition: top 0.28s ease, left 0.28s ease, transform 0.28s ease, opacity 0.2s ease;
-}
-.tour-card-head {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 8px;
-}
-.tour-step {
-  font-size: 11px; font-weight: 700; letter-spacing: 0.6px;
-  color: var(--accent); background: rgba(91, 140, 255, 0.12);
-  padding: 2px 8px; border-radius: 10px;
-}
-.tour-close {
-  border: none; background: transparent; color: var(--text-dim);
-  font-size: 14px; cursor: pointer; padding: 2px 6px; border-radius: 5px;
-}
-.tour-close:hover { color: var(--text); background: rgba(255,255,255,0.06); }
-.tour-card h3 { font-size: 15px; margin-bottom: 8px; }
-.tour-card p { font-size: 13px; color: var(--text-dim); line-height: 1.65; margin: 0; }
-.tour-progress {
-  height: 3px; background: #2b303b; border-radius: 2px;
-  margin: 14px 0 12px; overflow: hidden;
-}
-#tour-progress-bar {
-  height: 100%; width: 0%;
-  background: var(--accent);
-  border-radius: 2px;
-  transition: width 0.3s ease;
-}
-.tour-foot {
-  display: flex; align-items: center; gap: 8px;
-}
-.tour-spacer { flex: 1; }
-
 /* 滚动条 */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: #2e3440; border-radius: 4px; }
